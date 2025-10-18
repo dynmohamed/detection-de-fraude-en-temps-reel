@@ -1,0 +1,53 @@
+version: '3.8'
+services:
+  postgres:
+    image: postgres:15
+    container_name: postgresDETECTIONFRAUDE
+    environment:
+      POSTGRES_USER: myuser
+      POSTGRES_PASSWORD: mypassword
+      POSTGRES_DB: frauddb
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgresdata:/var/lib/postgresql/data
+  
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pgadminDETECTIONFRAUDE
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "8080:80"
+    depends_on:
+      - postgres
+    volumes:
+    - pgadmindata:/var/lib/pgadmin
+
+  jupyter:
+    build : ./notebooks
+    image: jupyter/base-notebook
+    container_name: notebook
+    ports:
+      - "8889:8889"
+    volumes:
+      - ./notebooks:/home/jovyan/notebooks
+      - ./ML:/home/jovyan/ML
+    environment:
+      JUPYTER_ENABLE_LAB: "yes"
+
+  
+  mlflow:
+    image: python:3.11-slim
+    container_name: mlflow
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./ML/mlruns:/mlflow/mlruns
+    working_dir: /mlflow
+    command: bash -c "pip install mlflow && mlflow server --backend-store-uri sqlite:///mlflow.db --default-artifact-root /mlflow/mlruns --host 0.0.0.0"
+volumes:
+  pgadmindata:
+  postgresdata:
+   
