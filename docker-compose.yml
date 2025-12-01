@@ -10,14 +10,9 @@ services:
       - "5432:5432"
     volumes:
       - postgresdata:/var/lib/postgresql/data
-<<<
-
-<<<< HEAD
     networks:
       - fraud-network
-=======
->>>>>>> 1a0f55118dc5e51b98703d23ad5bec3f5cd61fa4
-  
+
   pgadmin:
     image: dpage/pgadmin4:latest
     container_name: pgadminDETECTIONFRAUDE
@@ -29,20 +24,19 @@ services:
     depends_on:
       - postgres
     volumes:
-
       - pgadmindata:/var/lib/pgadmin
     networks:
       - fraud-network
 
   jupyter:
     build: ./notebooks
-    container_name: notebookdETECTIONFRAUDE
+    container_name: notebookDETECTIONFRAUDE
     ports:
       - "8888:8888"
     volumes:
       - ./notebooks:/home/jovyan/work
       - ./models:/home/jovyan/work/models
-      - ./ML:/home/jovyan/work/ML 
+      - ./ML:/home/jovyan/work/ML
       - ./ML:/mlflow
     environment:
       JUPYTER_ENABLE_LAB: "yes"
@@ -60,13 +54,18 @@ services:
     ports:
       - "5001:5000"
     volumes:
-      -  ./ML:/mlflow  
+      - ./ML:/mlflow
     environment:
       - MLFLOW_BACKEND_STORE_URI=sqlite:////mlflow/mlflow.db
       - MLFLOW_DEFAULT_ARTIFACT_ROOT=/mlflow/mlruns
-    command: bash -c "pip install mlflow && chmod -R 777 /mlflow && mlflow server --backend-store-uri sqlite:////mlflow/mlflow.db --default-artifact-root /mlflow/mlruns --host 0.0.0.0 --port 5000 --gunicorn-opts '--forwarded-allow-ips=* --proxy-allow-from=*'"
-
-      
+    command: >
+      bash -c "pip install mlflow &&
+               chmod -R 777 /mlflow &&
+               mlflow server
+               --backend-store-uri sqlite:////mlflow/mlflow.db
+               --default-artifact-root /mlflow/mlruns
+               --host 0.0.0.0 --port 5000
+               --gunicorn-opts '--forwarded-allow-ips=* --proxy-allow-from=*'"
     networks:
       - fraud-network
     restart: unless-stopped
@@ -76,12 +75,67 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
-  
-  
+
+  # ==============================
+  #        ZOOKEEPER + KAFKA
+  # ==============================
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    networks:
+      - streaming-network
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9093,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    networks:
+      - streaming-network
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  kafka-producer:
+    build:
+      context: ./kafka-producer
+      dockerfile: Dockerfile
+    container_name: kafka-producer
+    depends_on:
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./data:/data
+    networks:
+      - streaming-network
+    restart: on-failure
+
 volumes:
   pgadmindata:
   postgresdata:
 
 networks:
   fraud-network:
+    driver: bridge
+  streaming-network:
     driver: bridge
