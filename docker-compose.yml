@@ -10,8 +10,13 @@ services:
       - "5432:5432"
     volumes:
       - postgresdata:/var/lib/postgresql/data
+<<<
+
+<<<< HEAD
     networks:
       - fraud-network
+=======
+>>>>>>> 1a0f55118dc5e51b98703d23ad5bec3f5cd61fa4
   
   pgadmin:
     image: dpage/pgadmin4:latest
@@ -24,6 +29,7 @@ services:
     depends_on:
       - postgres
     volumes:
+
       - pgadmindata:/var/lib/pgadmin
     networks:
       - fraud-network
