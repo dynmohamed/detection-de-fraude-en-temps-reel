@@ -1,4 +1,7 @@
 services:
+  # ==============================
+  #        POSTGRES + PGADMIN
+  # ==============================
   postgres:
     image: postgres:15
     container_name: postgresDETECTIONFRAUDE
@@ -28,6 +31,9 @@ services:
     networks:
       - fraud-network
 
+  # ==============================
+  #            JUPYTER
+  # ==============================
   jupyter:
     build: ./notebooks
     container_name: notebookDETECTIONFRAUDE
@@ -47,6 +53,9 @@ services:
     networks:
       - fraud-network
 
+  # ==============================
+  #              MLFLOW
+  # ==============================
   mlflow:
     image: ghcr.io/mlflow/mlflow:v2.18.0
     container_name: mlflow
@@ -79,7 +88,6 @@ services:
   # ==============================
   #        ZOOKEEPER + KAFKA
   # ==============================
-
   zookeeper:
     image: confluentinc/cp-zookeeper:7.4.0
     container_name: zookeeper
@@ -130,6 +138,58 @@ services:
       - streaming-network
     restart: on-failure
 
+  # ==============================
+  #            SPARK
+  # ==============================
+  spark-master:
+    image: apache/spark:3.4.1-scala2.12-java11-python3-ubuntu
+    container_name: spark-master
+    environment:
+      - SPARK_MODE=master
+      - SPARK_MASTER_HOST=spark-master
+      - SPARK_MASTER_PORT=7077
+      - SPARK_MASTER_WEBUI_PORT=8081
+    ports:
+      - "8081:8081"
+      - "7077:7077"
+    volumes:
+      - ./data:/data
+    networks:
+      - streaming-network
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+
+  spark-worker:
+    image: apache/spark:3.4.1-scala2.12-java11-python3-ubuntu
+    container_name: spark-worker
+    depends_on:
+      - spark-master
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - SPARK_WORKER_CORES=2
+      - SPARK_WORKER_MEMORY=2g
+    volumes:
+      - ./data:/data
+    networks:
+      - streaming-network
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+
+  spark-consumer:
+    build:
+      context: ./spark-consumer
+      dockerfile: Dockerfile
+    container_name: spark-consumer
+    depends_on:
+      kafka:
+        condition: service_healthy
+      spark-master:
+        condition: service_started
+    networks:
+      - streaming-network
+
+# ==============================
+#        VOLUMES + NETWORKS
+# ==============================
 volumes:
   pgadmindata:
   postgresdata:
