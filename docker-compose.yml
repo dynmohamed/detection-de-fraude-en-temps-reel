@@ -1,7 +1,5 @@
 services:
-  # ==============================
-  #        POSTGRES + PGADMIN
-  # ==============================
+
   postgres:
     image: postgres:15
     container_name: postgresDETECTIONFRAUDE
@@ -31,9 +29,7 @@ services:
     networks:
       - fraud-network
 
-  # ==============================
-  #            JUPYTER
-  # ==============================
+  
   jupyter:
     build: ./notebooks
     container_name: notebookDETECTIONFRAUDE
@@ -53,9 +49,7 @@ services:
     networks:
       - fraud-network
 
-  # ==============================
-  #              MLFLOW
-  # ==============================
+
   mlflow:
     image: ghcr.io/mlflow/mlflow:v2.18.0
     container_name: mlflow
@@ -65,16 +59,15 @@ services:
     volumes:
       - ./ML:/mlflow
     environment:
-      - MLFLOW_BACKEND_STORE_URI=sqlite:////mlflow/mlflow.db
-      - MLFLOW_DEFAULT_ARTIFACT_ROOT=/mlflow/mlruns
+      MLFLOW_BACKEND_STORE_URI: sqlite:////mlflow/mlflow.db
+      MLFLOW_DEFAULT_ARTIFACT_ROOT: /mlflow/mlruns
     command: >
-      bash -c "pip install mlflow &&
-               chmod -R 777 /mlflow &&
-               mlflow server
-               --backend-store-uri sqlite:////mlflow/mlflow.db
-               --default-artifact-root /mlflow/mlruns
-               --host 0.0.0.0 --port 5000
-               --gunicorn-opts '--forwarded-allow-ips=* --proxy-allow-from=*'"
+      mlflow server
+      --backend-store-uri sqlite:////mlflow/mlflow.db
+      --default-artifact-root /mlflow/mlruns
+      --host 0.0.0.0
+      --port 5000
+      --gunicorn-opts '--forwarded-allow-ips=* --proxy-allow-from=*'
     networks:
       - fraud-network
     restart: unless-stopped
@@ -85,9 +78,7 @@ services:
       retries: 3
       start_period: 30s
 
-  # ==============================
-  #        ZOOKEEPER + KAFKA
-  # ==============================
+  
   zookeeper:
     image: confluentinc/cp-zookeeper:7.4.0
     container_name: zookeeper
@@ -138,9 +129,7 @@ services:
       - streaming-network
     restart: on-failure
 
-  # ==============================
-  #            SPARK
-  # ==============================
+  
   spark-master:
     image: apache/spark:3.4.1-scala2.12-java11-python3-ubuntu
     container_name: spark-master
@@ -187,9 +176,7 @@ services:
     networks:
       - streaming-network
 
-# ==============================
-#        VOLUMES + NETWORKS
-# ==============================
+
 volumes:
   pgadmindata:
   postgresdata:
