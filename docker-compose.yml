@@ -29,6 +29,21 @@ services:
     networks:
       - fraud-network
 
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafanaDETECTIONFRAUDE
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    depends_on:
+      - postgres
+    networks:
+      - fraud-network
+    volumes:
+      - grafanadata:/var/lib/grafana
+
   
   jupyter:
     build: ./notebooks
@@ -184,6 +199,7 @@ services:
 volumes:
   pgadmindata:
   postgresdata:
+  grafanadata:
 
 networks:
   fraud-network:
