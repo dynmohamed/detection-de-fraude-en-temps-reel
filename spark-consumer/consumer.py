@@ -22,13 +22,10 @@ POSTGRES_PASSWORD = "mypassword"
 # Charger les modèles (Globalement sur le driver)
 try:
     print("Chargement des modèles...")
-    # preprocessor = joblib.load(f"{MODEL_PATH}/preprocess.pkl") # Incompatible with the model
     model = joblib.load(f"{MODEL_PATH}/LightGBM.pkl")
-    print("✓ Modèles chargés avec succès")
+    print("Modèles chargés avec succès")
 except Exception as e:
-    print(f"✗ Erreur lors du chargement des modèles: {e}")
-    # On ne quitte pas ici car cela pourrait être exécuté avant que le volume ne soit monté correctement
-    # Mais pour le consumer, c'est critique.
+    print(f"Erreur lors du chargement des modèles: {e}")
 
 def create_spark_session():
     """Crée et retourne une session Spark avec les packages Kafka"""
@@ -54,8 +51,6 @@ def save_to_postgres(df_pandas):
         )
         cur = conn.cursor()
         
-        # Créer la table si elle n'existe pas
-        # Utilisation d'une nouvelle table pour éviter les conflits de schéma
         create_table_query = """
         CREATE TABLE IF NOT EXISTS fraud_predictions_new (
             transaction_id SERIAL PRIMARY KEY,
@@ -72,7 +67,6 @@ def save_to_postgres(df_pandas):
         """
         cur.execute(create_table_query)
         
-        # Insérer les données
         insert_query = """
         INSERT INTO fraud_predictions_new (step, type, amount, oldbalanceOrg, newbalanceOrig, oldbalanceDest, newbalanceDest, prediction)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
@@ -91,17 +85,17 @@ def save_to_postgres(df_pandas):
                     int(row['prediction'])
                 ))
             except Exception as e:
-                print(f"✗ Erreur insertion ligne {i}: {e}")
+                print(f"Erreur insertion ligne {i}: {e}")
                 conn.rollback() 
                 break
         
         conn.commit()
         cur.close()
         conn.close()
-        print(f"✓ {len(df_pandas)} prédictions sauvegardées dans PostgreSQL")
+        print(f"{len(df_pandas)} prédictions sauvegardées dans PostgreSQL")
         
     except Exception as e:
-        print(f"✗ Erreur PostgreSQL: {e}")
+        print(f"Erreur PostgreSQL: {e}")
 
 def process_batch(batch_df, batch_id):
     """Fonction appliquée à chaque micro-batch"""
@@ -113,24 +107,19 @@ def process_batch(batch_df, batch_id):
     if count == 0:
         return
         
-    # Convertir Spark DataFrame en Pandas DataFrame
     print(f"Batch {batch_id}: Conversion en Pandas...")
     pdf = batch_df.toPandas()
     print(f"Batch {batch_id}: Conversion terminée")
     
-    # Renommer les colonnes en minuscules pour correspondre au préprocesseur
     pdf.columns = [c.lower() for c in pdf.columns]
     
-    # Préparer les données pour le modèle
     data_for_pred = pdf.copy()
     
-    # Supprimer les colonnes inutiles si elles existent
     cols_to_drop = ['nameorig', 'namedest']
     data_for_pred = data_for_pred.drop(columns=[c for c in cols_to_drop if c in data_for_pred.columns])
     
     try:
         # Manual Preprocessing to match LightGBM model (7 features, Label Encoded type)
-        # Mapping based on alphabetical order of types: CASH_IN, CASH_OUT, DEBIT, PAYMENT, TRANSFER
         type_mapping = {
             'CASH_IN': 0,
             'CASH_OUT': 1,
@@ -139,38 +128,31 @@ def process_batch(batch_df, batch_id):
             'TRANSFER': 4
         }
         
-        # Apply mapping to 'type' column
-        # Ensure 'type' is uppercase before mapping just in case
         if 'type' in data_for_pred.columns:
             data_for_pred['type'] = data_for_pred['type'].str.upper().map(type_mapping)
-            # Handle unknown types if any
             data_for_pred['type'] = data_for_pred['type'].fillna(-1).astype(int)
         
-        # Ensure column order matches training: step, type, amount, oldbalanceorg, newbalanceorig, oldbalancedest, newbalancedest
+        # Ensure column order matches training
         feature_cols = ['step', 'type', 'amount', 'oldbalanceorg', 'newbalanceorig', 'oldbalancedest', 'newbalancedest']
         
-        # Check if all columns exist
         missing_cols = [c for c in feature_cols if c not in data_for_pred.columns]
         if missing_cols:
             raise ValueError(f"Missing columns for prediction: {missing_cols}")
             
         X_processed = data_for_pred[feature_cols]
         
-        # Faire la prédiction
         print(f"Batch {batch_id}: Prédiction...")
         predictions = model.predict(X_processed)
         print(f"Batch {batch_id}: Prédiction terminée")
         
-        # Ajouter la prédiction au DataFrame original
         pdf['prediction'] = predictions
         
-        # Sauvegarder dans Postgres
         print(f"Batch {batch_id}: Sauvegarde dans Postgres...")
         save_to_postgres(pdf)
         print(f"Batch {batch_id}: Sauvegarde terminée")
         
     except Exception as e:
-        print(f"✗ Erreur lors du traitement/prédiction: {e}")
+        print(f"Erreur lors du traitement/prédiction: {e}")
 
 def main():
     spark = create_spark_session()
