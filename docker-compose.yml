@@ -173,8 +173,12 @@ services:
         condition: service_healthy
       spark-master:
         condition: service_started
+    volumes:
+      - ./model_finale:/app/model_finale
+    command: python3 consumer.py
     networks:
       - streaming-network
+      - fraud-network
 
 
 volumes:

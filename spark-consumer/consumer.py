@@ -1,95 +1,220 @@
 """
-Spark Streaming Consumer - Consommation depuis Kafka et transformation des données
+Spark Streaming Consumer - Consommation depuis Kafka, Prédiction et Stockage PostgreSQL
 """
+import sys
+import json
+import joblib
+import pandas as pd
+import psycopg2
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import from_json, col, current_timestamp, to_timestamp
-from pyspark.sql.types import StructType, StructField, StringType
+from pyspark.sql.functions import from_json, col
+from pyspark.sql.types import StructType, StructField, StringType, DoubleType, IntegerType
 
 # Configuration
 KAFKA_BROKER = "kafka:9093"
 KAFKA_TOPIC = "data-stream"
-OUTPUT_PATH = "/data/processed"
+MODEL_PATH = "/app/model_finale"
+POSTGRES_HOST = "postgres"
+POSTGRES_DB = "frauddb"
+POSTGRES_USER = "myuser"
+POSTGRES_PASSWORD = "mypassword"
+
+# Charger les modèles (Globalement sur le driver)
+try:
+    print("Chargement des modèles...")
+    # preprocessor = joblib.load(f"{MODEL_PATH}/preprocess.pkl") # Incompatible with the model
+    model = joblib.load(f"{MODEL_PATH}/LightGBM.pkl")
+    print("✓ Modèles chargés avec succès")
+except Exception as e:
+    print(f"✗ Erreur lors du chargement des modèles: {e}")
+    # On ne quitte pas ici car cela pourrait être exécuté avant que le volume ne soit monté correctement
+    # Mais pour le consumer, c'est critique.
 
 def create_spark_session():
     """Crée et retourne une session Spark avec les packages Kafka"""
     spark = SparkSession.builder \
-        .appName("KafkaSparkStreaming") \
-        .config("spark.jars.packages", 
-                "org.apache.spark:spark-sql-kafka-0-10_2.12:3.4.1") \
-        .config("spark.sql.streaming.checkpointLocation", "/tmp/checkpoint") \
+        .appName("FraudDetectionConsumer") \
+        .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.4.1") \
         .getOrCreate()
     
     spark.sparkContext.setLogLevel("WARN")
-    print("✓ Session Spark créée avec succès")
     return spark
 
-def process_stream(spark):
-    """Lit le stream Kafka et applique des transformations"""
+def save_to_postgres(df_pandas):
+    """Sauvegarde les résultats dans PostgreSQL"""
+    if df_pandas.empty:
+        return
+
+    try:
+        conn = psycopg2.connect(
+            host=POSTGRES_HOST,
+            database=POSTGRES_DB,
+            user=POSTGRES_USER,
+            password=POSTGRES_PASSWORD
+        )
+        cur = conn.cursor()
+        
+        # Créer la table si elle n'existe pas
+        # Utilisation d'une nouvelle table pour éviter les conflits de schéma
+        create_table_query = """
+        CREATE TABLE IF NOT EXISTS fraud_predictions_new (
+            transaction_id SERIAL PRIMARY KEY,
+            step INT,
+            type VARCHAR(50),
+            amount FLOAT,
+            oldbalanceOrg FLOAT,
+            newbalanceOrig FLOAT,
+            oldbalanceDest FLOAT,
+            newbalanceDest FLOAT,
+            prediction INT,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+        cur.execute(create_table_query)
+        
+        # Insérer les données
+        insert_query = """
+        INSERT INTO fraud_predictions_new (step, type, amount, oldbalanceOrg, newbalanceOrig, oldbalanceDest, newbalanceDest, prediction)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """
+        
+        for i, row in df_pandas.iterrows():
+            try:
+                cur.execute(insert_query, (
+                    int(row['step']), 
+                    str(row['type']), 
+                    float(row['amount']), 
+                    float(row['oldbalanceorg']), 
+                    float(row['newbalanceorig']), 
+                    float(row['oldbalancedest']), 
+                    float(row['newbalancedest']), 
+                    int(row['prediction'])
+                ))
+            except Exception as e:
+                print(f"✗ Erreur insertion ligne {i}: {e}")
+                conn.rollback() 
+                break
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        print(f"✓ {len(df_pandas)} prédictions sauvegardées dans PostgreSQL")
+        
+    except Exception as e:
+        print(f"✗ Erreur PostgreSQL: {e}")
+
+def process_batch(batch_df, batch_id):
+    """Fonction appliquée à chaque micro-batch"""
+    print(f"Traitement du batch {batch_id}...")
     
-    # Lecture du stream depuis Kafka
+    count = batch_df.count()
+    print(f"Batch {batch_id}: {count} enregistrements")
+    
+    if count == 0:
+        return
+        
+    # Convertir Spark DataFrame en Pandas DataFrame
+    print(f"Batch {batch_id}: Conversion en Pandas...")
+    pdf = batch_df.toPandas()
+    print(f"Batch {batch_id}: Conversion terminée")
+    
+    # Renommer les colonnes en minuscules pour correspondre au préprocesseur
+    pdf.columns = [c.lower() for c in pdf.columns]
+    
+    # Préparer les données pour le modèle
+    data_for_pred = pdf.copy()
+    
+    # Supprimer les colonnes inutiles si elles existent
+    cols_to_drop = ['nameorig', 'namedest']
+    data_for_pred = data_for_pred.drop(columns=[c for c in cols_to_drop if c in data_for_pred.columns])
+    
+    try:
+        # Manual Preprocessing to match LightGBM model (7 features, Label Encoded type)
+        # Mapping based on alphabetical order of types: CASH_IN, CASH_OUT, DEBIT, PAYMENT, TRANSFER
+        type_mapping = {
+            'CASH_IN': 0,
+            'CASH_OUT': 1,
+            'DEBIT': 2,
+            'PAYMENT': 3,
+            'TRANSFER': 4
+        }
+        
+        # Apply mapping to 'type' column
+        # Ensure 'type' is uppercase before mapping just in case
+        if 'type' in data_for_pred.columns:
+            data_for_pred['type'] = data_for_pred['type'].str.upper().map(type_mapping)
+            # Handle unknown types if any
+            data_for_pred['type'] = data_for_pred['type'].fillna(-1).astype(int)
+        
+        # Ensure column order matches training: step, type, amount, oldbalanceorg, newbalanceorig, oldbalancedest, newbalancedest
+        feature_cols = ['step', 'type', 'amount', 'oldbalanceorg', 'newbalanceorig', 'oldbalancedest', 'newbalancedest']
+        
+        # Check if all columns exist
+        missing_cols = [c for c in feature_cols if c not in data_for_pred.columns]
+        if missing_cols:
+            raise ValueError(f"Missing columns for prediction: {missing_cols}")
+            
+        X_processed = data_for_pred[feature_cols]
+        
+        # Faire la prédiction
+        print(f"Batch {batch_id}: Prédiction...")
+        predictions = model.predict(X_processed)
+        print(f"Batch {batch_id}: Prédiction terminée")
+        
+        # Ajouter la prédiction au DataFrame original
+        pdf['prediction'] = predictions
+        
+        # Sauvegarder dans Postgres
+        print(f"Batch {batch_id}: Sauvegarde dans Postgres...")
+        save_to_postgres(pdf)
+        print(f"Batch {batch_id}: Sauvegarde terminée")
+        
+    except Exception as e:
+        print(f"✗ Erreur lors du traitement/prédiction: {e}")
+
+def main():
+    spark = create_spark_session()
+    
+    # Définition du schéma des données entrantes (tout en String pour gérer le JSON)
+    schema = StructType([
+        StructField("step", StringType()),
+        StructField("type", StringType()),
+        StructField("amount", StringType()),
+        StructField("nameOrig", StringType()),
+        StructField("oldbalanceOrg", StringType()),
+        StructField("newbalanceOrig", StringType()),
+        StructField("nameDest", StringType()),
+        StructField("oldbalanceDest", StringType()),
+        StructField("newbalanceDest", StringType())
+    ])
+    
+    # Lecture du stream Kafka
     df = spark \
         .readStream \
         .format("kafka") \
         .option("kafka.bootstrap.servers", KAFKA_BROKER) \
         .option("subscribe", KAFKA_TOPIC) \
         .option("startingOffsets", "earliest") \
-        .option("kafka.session.timeout.ms", "30000") \
-        .option("kafka.request.timeout.ms", "120000") \
-        .option("kafka.default.api.timeout.ms", "120000") \
-        .option("failOnDataLoss", "false") \
+        .option("maxOffsetsPerTrigger", 1000) \
         .load()
     
-    print(f"✓ Connexion au topic Kafka '{KAFKA_TOPIC}' établie")
+    # Parsing du JSON et casting explicite
+    parsed_df = df.select(from_json(col("value").cast("string"), schema).alias("data")).select("data.*")
     
-    # Convertir les données binaires en string
-    df_string = df.selectExpr("CAST(value AS STRING) as json_data", "timestamp")
+    parsed_df = parsed_df \
+        .withColumn("step", col("step").cast(IntegerType())) \
+        .withColumn("amount", col("amount").cast(DoubleType())) \
+        .withColumn("oldbalanceOrg", col("oldbalanceOrg").cast(DoubleType())) \
+        .withColumn("newbalanceOrig", col("newbalanceOrig").cast(DoubleType())) \
+        .withColumn("oldbalanceDest", col("oldbalanceDest").cast(DoubleType())) \
+        .withColumn("newbalanceDest", col("newbalanceDest").cast(DoubleType()))
     
-    # Parser le JSON (vous pouvez adapter le schéma selon vos données)
-    # Comme on ne connaît pas la structure exacte, on garde le JSON en string
-    # et on ajoute des colonnes de traitement
-    
-    df_transformed = df_string \
-        .withColumn("processing_time", current_timestamp()) \
-        .withColumn("kafka_timestamp", col("timestamp"))
-    
-    # Afficher les données dans la console uniquement
-    query = df_transformed \
-        .writeStream \
-        .outputMode("append") \
-        .format("console") \
-        .option("truncate", "false") \
-        .trigger(processingTime='5 seconds') \
+    # Démarrage du streaming avec foreachBatch
+    query = parsed_df.writeStream \
+        .foreachBatch(process_batch) \
         .start()
     
-    print("✓ Streaming vers la console démarré")
-    
-    return query
-
-def main():
-    """Fonction principale"""
-    print("=" * 60)
-    print("SPARK STREAMING CONSUMER - Traitement des données Kafka")
-    print("=" * 60)
-    
-    try:
-        # Créer la session Spark
-        spark = create_spark_session()
-        
-        # Démarrer le traitement du stream
-        query = process_stream(spark)
-        
-        print("\n→ Streaming en cours... (Ctrl+C pour arrêter)")
-        print("-" * 60)
-        
-        # Attendre la fin du streaming
-        query.awaitTermination()
-        
-    except KeyboardInterrupt:
-        print("\n\n✓ Arrêt du streaming demandé")
-    except Exception as e:
-        print(f"\n✗ Erreur: {e}")
-    finally:
-        print("✓ Consumer Spark arrêté")
+    query.awaitTermination()
 
 if __name__ == "__main__":
     main()

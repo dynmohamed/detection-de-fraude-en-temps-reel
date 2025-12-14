@@ -47,7 +47,19 @@ def read_and_stream_csv(producer):
     
     try:
         with open(CSV_FILE_PATH, 'r', encoding='utf-8') as csvfile:
-            csv_reader = csv.DictReader(csvfile)
+            # Detecter le delimiteur automatiquement ou utiliser ; par defaut
+            sample = csvfile.read(1024)
+            csvfile.seek(0)
+            sniffer = csv.Sniffer()
+            try:
+                dialect = sniffer.sniff(sample)
+                delimiter = dialect.delimiter
+            except:
+                delimiter = ';' # Fallback
+            
+            print(f"✓ Utilisation du délimiteur: '{delimiter}'")
+            csv_reader = csv.DictReader(csvfile, delimiter=delimiter)
+
             
             print(f"\n✓ Lecture du fichier: {CSV_FILE_PATH}")
             print(f"✓ Colonnes détectées: {csv_reader.fieldnames}\n")
