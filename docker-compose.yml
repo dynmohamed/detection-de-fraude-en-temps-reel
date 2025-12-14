@@ -7,7 +7,7 @@ services:
       POSTGRES_USER: myuser
       POSTGRES_PASSWORD: mypassword
       POSTGRES_DB: frauddb
-    ports:
+    ports: 
       - "5432:5432"
     volumes:
       - postgresdata:/var/lib/postgresql/data
